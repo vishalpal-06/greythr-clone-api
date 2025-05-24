@@ -1,0 +1,134 @@
+from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
+from passlib.context import CryptContext
+from sqlalchemy.orm import Session
+from jose import jwt, JWTError
+from pydantic import BaseModel
+from typing import Annotated, List
+from datetime import timedelta, datetime, timezone
+from dbs.models import Employee, Role  # Import from model.py
+from dbs.database import engine,sessionlocal as SessionLocal
+
+# engine = create_engine('sqlite:///greythr.db', echo=True)
+# SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+router = APIRouter(
+    prefix='/auth',
+    tags=['Auth']
+)
+
+# Security settings
+SECRET_KEY = 'd2e2b8fe4827c93ad7ac831a45b2f28c6f33e04f975c0b4b2b1b8d8b38d694a4'  # Use env variable in production
+ALGORITHM = 'HS256'
+bcrypt_context = CryptContext(schemes=['bcrypt'], deprecated='auto')
+oauth2_bearer = OAuth2PasswordBearer(tokenUrl='auth/token')
+
+# Pydantic models
+class UserData(BaseModel):
+    email: str
+    firstName: str
+    lastName: str
+    roles: List[str]
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    userdata: UserData
+
+# Database dependency
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# Authenticate user
+def authenticate_user(email: str, password: str, db: Session):
+    user = db.query(Employee).filter(Employee.email == email).first()
+    if not user or not bcrypt_context.verify(password, user.password):
+        return None
+    return user
+
+# Create JWT token
+def create_access_token(email: str, employee_id: int, roles: List[str], expires_delta: timedelta):
+    encode = {
+        'sub': email,
+        'id': employee_id,
+        'roles': roles
+    }
+    expires = datetime.now(timezone.utc) + expires_delta
+    encode.update({'exp': expires})
+    return jwt.encode(encode, SECRET_KEY, algorithm=ALGORITHM)
+
+# Get current user from token
+async def get_current_user(token: Annotated[str, Depends(oauth2_bearer)]):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get('sub')
+        employee_id: int = payload.get('id')
+        roles: List[str] = payload.get('roles')
+        if email is None or employee_id is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Could not validate user.')
+        return {'email': email, 'id': employee_id, 'roles': roles}
+    except JWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Could not validate user.')
+
+db_dependency = Annotated[Session, Depends(get_db)]
+user_dependency = Annotated[dict, Depends(get_current_user)]
+
+@router.post("/token", response_model=Token)
+async def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm, Depends()], db: db_dependency):
+    user = authenticate_user(form_data.username, form_data.password, db)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Invalid email or password',
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+    
+    # Fetch user roles
+    roles = [role.roleName for role in user.roles]
+    
+    # Create JWT token
+    token = create_access_token(user.email, user.employeeID, roles, timedelta(minutes=60))
+    
+    # Update last_login
+    user.last_login = datetime.now(timezone.utc)
+    db.commit()
+    
+    return {
+        'access_token': token,
+        'token_type': 'bearer',
+        'userdata': {
+            'email': user.email,
+            'firstName': user.firstName,
+            'lastName': user.lastName,
+            'roles': roles
+        }
+    }
+
+
+
+
+class UserDetailsResponse(BaseModel):
+    id: int
+    first_name: str
+    last_name: str
+    email: str
+
+
+
+@router.get("/user_details/", status_code=status.HTTP_200_OK)
+async def get_user_details(user: user_dependency, db: db_dependency):
+    if user is None:
+        raise HTTPException(status_code=401, detail='Authentication Failed')
+    user_model = db.query(Employee).filter(Employee.employeeID == user.get('id')).first()
+    if user_model is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return UserDetailsResponse(
+        id=user_model.employeeID,
+        first_name=user_model.firstName,
+        last_name=user_model.lastName,
+        email=user_model.email,
+    )
