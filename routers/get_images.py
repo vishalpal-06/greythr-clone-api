@@ -5,7 +5,7 @@ import os
 
 router = APIRouter(
     prefix='/getimages',
-    tags=['Todos']
+    tags=['Images']
 )
 
 
