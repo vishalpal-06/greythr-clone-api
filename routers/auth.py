@@ -9,8 +9,6 @@ from datetime import timedelta, datetime, timezone
 from dbs.models import Employee, Role  # Import from model.py
 from dbs.database import engine,sessionlocal as SessionLocal
 
-# engine = create_engine('sqlite:///greythr.db', echo=True)
-# SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 router = APIRouter(
     prefix='/auth',
@@ -23,17 +21,10 @@ ALGORITHM = 'HS256'
 bcrypt_context = CryptContext(schemes=['bcrypt'], deprecated='auto')
 oauth2_bearer = OAuth2PasswordBearer(tokenUrl='auth/token')
 
-# Pydantic models
-class UserData(BaseModel):
-    email: str
-    firstName: str
-    lastName: str
-    roles: List[str]
 
 class Token(BaseModel):
     access_token: str
     token_type: str
-    userdata: UserData
 
 # Database dependency
 def get_db():
@@ -100,35 +91,8 @@ async def login_for_access_token(form_data: Annotated[OAuth2PasswordRequestForm,
     return {
         'access_token': token,
         'token_type': 'bearer',
-        'userdata': {
-            'email': user.email,
-            'firstName': user.firstName,
-            'lastName': user.lastName,
-            'roles': roles
-        }
     }
 
 
 
 
-class UserDetailsResponse(BaseModel):
-    id: int
-    first_name: str
-    last_name: str
-    email: str
-
-
-
-@router.get("/user_details/", status_code=status.HTTP_200_OK)
-async def get_user_details(user: user_dependency, db: db_dependency):
-    if user is None:
-        raise HTTPException(status_code=401, detail='Authentication Failed')
-    user_model = db.query(Employee).filter(Employee.employeeID == user.get('id')).first()
-    if user_model is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    return UserDetailsResponse(
-        id=user_model.employeeID,
-        first_name=user_model.firstName,
-        last_name=user_model.lastName,
-        email=user_model.email,
-    )
